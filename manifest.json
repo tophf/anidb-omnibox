@@ -1,0 +1,28 @@
+{
+	"name": "AniDB omnibox ~",
+	"description": "AniDB omnibox search predictions",
+	"version": "1.0",
+	"omnibox": {
+		"keyword": "ani"
+	},
+	"icons": {
+		"16": "icon/16.png",
+		"32": "icon/32.png",
+		"128": "icon/128.png",
+		"256": "icon/256.png"
+	},
+	"background": {
+		"scripts": ["background.js"],
+		"persistent": false
+	},
+	"permissions": [
+		"storage",
+		"activeTab",
+		"notifications",
+		"alarms",
+		"https://anidb.net/perl-bin/animedb.pl*",
+		"https://*.anidb.net/pics/*"
+	],
+	"manifest_version": 2,
+	"minimum_chrome_version": "45" /* arrow functions */
+}
