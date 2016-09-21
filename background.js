@@ -19,8 +19,8 @@ const CATEGORIES = {
 	u: 'user',
 	'': 'anime'
 };
-const CATEGORY_SPLITTER = new RegExp('^(.*?)(?:/([' +
-	Object.keys(CATEGORIES).join('') + ']))?$', 'i');
+const CATEGORY_SPLITTER = new RegExp('^(.*?)(/[' +
+	Object.keys(CATEGORIES).join('') + '])?!?$', 'i');
 
 let g = {
 	text: '',          // sanitized
@@ -55,9 +55,10 @@ chrome.omnibox.onInputChanged.addListener(onInputChanged);
 
 chrome.omnibox.onInputEntered.addListener(text =>
 	chrome.tabs.update({
-		url: text.match(/^https?:/) ? text
-		                            : text.trim() ? SEARCH_URL + g.textForURL
-		                                          : SITE_URL
+		url: text.match(/^https?:/)
+			? text
+			: text.trim() ? SEARCH_URL + g.textForURL
+			              : SITE_URL
 	}));
 
 chrome.omnibox.onInputCancelled.addListener(abortPendingSearch);
@@ -69,7 +70,7 @@ chrome.alarms.onAlarm.addListener(alarm =>
 
 function onInputChanged(text, suggest)
 {
-		text = text.trim();
+	text = text.trim();
 	g.forceSearch = text.endsWith('!');
 	var m = text.match(CATEGORY_SPLITTER);
 	g.categoryKey = m[2] || '';
@@ -180,9 +181,9 @@ function showImageNotification(event) {
 		type: 'image',
 		iconUrl: 'icon/256.png',
 		imageUrl: g.canvas.toDataURL(),
-		title: g.best.name,
-		message: g.best.type,
-		contextMessage: g.best.score,
+		title: g.best.title,
+		message: g.best.text,
+		contextMessage: g.best.note,
 	});
 }
 
@@ -204,9 +205,9 @@ function cookSuggestions(found)
 		siteLink: g.siteLink + ' Found in categories: ' + Object.keys(categoryHits)
 			.map(cat => `${cat} (${categoryHits[cat]})`).join(', '),
 		best: best && {
-			name: best.name,
-			type: best.type,
-			score: best.score,
+			title: best.name,
+			text: best.type,
+			note: best.score,
 			image: best.picurl.replace(/^[\s\S]+?https?(:.+?)thumbs\/\d+x\d+\/(.+?)-thumb[\s\S]+/,
 			                          'https$1$2'),
 		},
@@ -256,7 +257,8 @@ function wordsAsRegexp(s)
 
 function escapeXML(s)
 {
-	return !s || !/["'<>&]/.test(s) ? s || ''
+	return !s || !/["'<>&]/.test(s)
+		? s || ''
 		: s.replace(/&/g, '&amp;')
 		   .replace(/"/g, '&quot;')
 		   .replace(/'/g, '&apos;')
@@ -266,7 +268,8 @@ function escapeXML(s)
 
 function unescapeXML(s)
 {
-	return !s || !/["'<>&]/.test(s) ? s || ''
+	return !s || !/["'<>&]/.test(s)
+		? s || ''
 		: s
 			.replace(/&quot;/g, '"')
 			.replace(/&apos;/g, "'")
