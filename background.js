@@ -1,8 +1,13 @@
+'use strict';
+
 const MAX_CACHE_AGE = 7 * 24 * 3600 * 1000; // ms, 7 days
 const REQUEST_DELAY = 200; // ms
 const KEY_PREFIX = 'input:'; // cache key prefix
 
 const SITE_URL = 'https://anidb.net/';
+const API_OPTS = {
+  headers: {'X-LControl': 'x-no-cache'},
+};
 const API_URL = SITE_URL + 'perl-bin/animedb.pl?show=json&action=search&type=%t&query=';
 const SEARCH_URL = SITE_URL + 'perl-bin/animedb.pl?show=search&do.search=search&adb.search=';
 
@@ -36,18 +41,12 @@ const g = {
   */
   partialInputs: [],
 
-  xhrScheduled: 0,   // setTimeout id
-  xhr: new XMLHttpRequest(),
-
+  reqTimer: 0,
+  /** @type AbortController */
+  reqAborter: null,
   cache: chrome.storage.local,
-
-  img: document.createElement('img'),
-  canvas: document.createElement('canvas'),
-  canvas2d: null,
   best: null,        // the best match to display in a notification
 };
-g.xhr.responseType = 'json';
-g.canvas2d = g.canvas.getContext('2d');
 
 /*****************************************************************************/
 
@@ -70,7 +69,7 @@ chrome.alarms.onAlarm.addListener(alarm =>
 
 /*****************************************************************************/
 
-function onInputChanged(text, suggest) {
+async function onInputChanged(text, suggest) {
   text = text.trim();
   g.forceSearch = text.endsWith('!');
   const m = text.match(CATEGORY_SPLITTER);
@@ -93,46 +92,39 @@ function onInputChanged(text, suggest) {
   g.siteLink = `<dim>Search for <match>${escapeXML(g.text)}</match> on site.</dim>`;
   chrome.omnibox.setDefaultSuggestion({description: g.siteLink});
 
-  if (!g.text.length)
-    return;
-
-  Promise.resolve(g.textForCache)
-    .then(readCache)
-    .then(searchSite)
-    .then(data => displayData(data, suggest));
+  const data = g.text && await searchSite();
+  if (data) {
+    displayData(data);
+    suggest(data.suggestions);
+  }
 }
 
-function readCache(key) {
-  return new Promise(done =>
-    g.cache.get(key, items => {
-      const data = items[key];
-      if (typeof data == 'string') {
-        key = KEY_PREFIX + data;
-        g.cache.get(key, items => done(items[key]));
-      } else {
-        done(data);
-      }
-    })
-  );
+async function readCache(key) {
+  const v = (await g.cache.get(key))[key];
+  return typeof v == 'string'
+    ? readCache(KEY_PREFIX + v)
+    : v;
 }
 
-function searchSite(data) {
+/** @return {Promise<CookedData>} */
+async function searchSite() {
   abortPendingSearch();
-  return data && data.expires > Date.now() && !g.forceSearch ? data
-    : new Promise(done => (
-      g.xhrScheduled = setTimeout(() => {
-        g.xhr.open('GET', API_URL.replace('%t', g.category) + g.textForURL);
-        g.xhr.setRequestHeader('X-LControl', 'x-no-cache');
-        g.xhr.onreadystatechange = () => {
-          if (g.xhr.readyState === XMLHttpRequest.DONE && g.xhr.status === 200) {
-            data = cookSuggestions(g.xhr.response);
-            updateCache(data);
-            done(data);
-          }
-        };
-        g.xhr.send();
-      }, REQUEST_DELAY)
-    ));
+  let data = await readCache(g.textForCache);
+  if (g.forceSearch || !data || data.expires <= Date.now()) {
+    data = await doFetch();
+    if (data) updateCache(data);
+  }
+  return data;
+}
+
+async function doFetch() {
+  const {signal} = g.reqAborter = new AbortController();
+  g.reqTimer = setTimeout(abortPendingSearch, REQUEST_DELAY);
+  try {
+    const url = API_URL.replace('%t', g.category) + g.textForURL;
+    const req = await fetch(url, {...API_OPTS, signal});
+    return cookSuggestions(await req.json());
+  } catch (e) {}
 }
 
 function updateCache(data) {
@@ -160,19 +152,21 @@ function cleanupCache() {
   });
 }
 
-function displayData(data, suggest) {
-  chrome.omnibox.setDefaultSuggestion({description: data.siteLink});
-  suggest(data.suggestions);
-  if (data.best && /https:\/\/[^/]*?\.anidb\.net\/[-\w./?]+/.test(data.best.image)) {
-    fetch(RegExp.lastMatch.replace(/-thumb\..+/, ''))
+/** @param {CookedData} _ */
+function displayData({best, siteLink, suggestions}) {
+  chrome.omnibox.setDefaultSuggestion({description: siteLink});
+  const url = best.image?.match(/https:\/\/[^/]*?\.anidb\.net\/[-\w./?]+|$/)[0];
+  if (url) {
+    g.best = best;
+    fetch(url.replace(/-thumb\..+/, ''))
       .then(r => r.blob())
+      .then(blob2dataUri)
       .then(showImageNotification);
-    g.best = data.best;
   }
+  return suggestions;
 }
 
-function showImageNotification(blob) {
-  const url = URL.createObjectURL(blob);
+function showImageNotification(url) {
   chrome.notifications.create('best', {
     type: 'image',
     iconUrl: 'icon/256.png',
@@ -180,19 +174,28 @@ function showImageNotification(blob) {
     title: g.best.title,
     message: g.best.text,
     contextMessage: g.best.note,
-  }, () => URL.revokeObjectURL(url));
+  });
 }
 
 function abortPendingSearch() {
-  g.xhr.abort();
-  clearTimeout(g.xhrScheduled);
+  g.reqAborter?.abort();
+  g.reqAborter = null;
+  clearTimeout(g.reqTimer);
+}
+
+function blob2dataUri(blob) {
+  return new Promise(resolve => {
+    const fr = new FileReader();
+    fr.onloadend = () => resolve(fr.result);
+    fr.readAsDataURL(blob);
+  });
 }
 
 function cookSuggestions(found) {
   const rxWords = wordsAsRegexp(g.text, 'gi');
   let best;
   const categoryHits = {};
-  return {
+  return /** @namespace CookedData */ {
     suggestions: found.map(_preprocess)
       .sort((a, b) => b.weight - a.weight || (a.name > b.name ? 1 : a.name < b.name ? -1 : 0))
       .map(_formatItem),
